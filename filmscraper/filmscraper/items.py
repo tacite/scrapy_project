@@ -20,7 +20,7 @@ class FilmscraperParsingItem(scrapy.Item):
     duration = Field()
     public = Field()
     acteurs = Field()
-    type = "raw"
+    type = Field()
     
 class FilmscraperItem(scrapy.Item):
     titre = Field()
@@ -37,4 +37,33 @@ class FilmscraperItem(scrapy.Item):
     notes_spectateur = Field()
     public = Field()
     acteurs = Field()
-    type = "clean"
+    type = Field()
+    
+class SeriescraperParsingItem(scrapy.Item):
+    titre = Field()
+    body_info = Field()
+    body_direction = Field()
+    body_nationality = Field()
+    body_titre_original = Field()
+    ratings = Field()
+    description = Field()
+    saison_episode = Field()
+    status = Field()
+    
+class SeriescraperItem(scrapy.Item):
+    titre = Field()
+    titre_original = Field()
+    createur = Field()
+    periode = Field()
+    duree_moyenne = Field()
+    nationalite = Field()
+    genre = Field()
+    notes_presse = Field()
+    notes_spectateur = Field()
+    description = Field()
+    saisons = Field()
+    episodes = Field()
+    prix = Field()
+    status = Field()
+    
+    

@@ -6,7 +6,7 @@
 
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
-from filmscraper.items import FilmscraperItem
+from filmscraper.items import FilmscraperItem, SeriescraperItem
 from filmscraper.items import FilmscraperParsingItem
 import psycopg2
 import sqlite3
@@ -20,6 +20,7 @@ class FilmscraperPipeline:
             filmItem = FilmscraperItem()
             
             filmAdapter = ItemAdapter(filmItem)
+            filmAdapter['type'] = "clean"
 
             filmItem = self.clean_titre(filmItem, parsingAdapter, filmAdapter)
             filmItem = self.clean_titre_original(filmItem, parsingAdapter, filmAdapter)
@@ -34,9 +35,8 @@ class FilmscraperPipeline:
             filmItem = self.clean_ratings(filmItem, parsingAdapter, filmAdapter)
             filmItem = self.clean_public(filmItem, parsingAdapter, filmAdapter)
             filmItem = self.clean_acteurs(filmItem, parsingAdapter, filmAdapter)
-            logging.info('rentré dans le pipeline 1')
             return filmItem
-        return item
+        return None
     
     def clean_titre(self,filmItem: FilmscraperItem, parsingAdapter: ItemAdapter, filmAdapter: ItemAdapter):
         titre = parsingAdapter.get('titre')
@@ -119,11 +119,11 @@ class FilmscraperPipeline:
     def clean_ratings(self,filmItem: FilmscraperItem, parsingAdapter: ItemAdapter, filmAdapter: ItemAdapter):
         ratings = parsingAdapter.get('ratings')
         if len(ratings) == 2:
-            filmAdapter['notes_presse'] = ratings[0]
-            filmAdapter['notes_spectateur'] = ratings[1]
+            filmAdapter['notes_presse'] = ratings[0].replace(',', '.')
+            filmAdapter['notes_spectateur'] = ratings[1].replace(',', '.')
         else:
             filmAdapter['notes_presse'] = None
-            filmAdapter['notes_spectateur'] = ratings[0]
+            filmAdapter['notes_spectateur'] = ratings[0].replace(',', '.')
         
         return filmItem
     
@@ -154,6 +154,7 @@ class FilmDatabasePipeline:
         self.connection = psycopg2.connect(host=hostname, user=username, password=password, dbname=database)
         
         self.cur = self.connection.cursor()
+        self.cur.execute("DROP TABLE films")
         self.cur.execute('''
         CREATE TABLE IF NOT EXISTS films(
             id SERIAL PRIMARY KEY,
@@ -176,7 +177,10 @@ class FilmDatabasePipeline:
         self.connection.commit()
         
     def process_item(self, item, spider):
-        if item.get('type') == "clean":
+        adapter = ItemAdapter(item)
+        if adapter.get('type') == "clean":
+            notes_presse = float(adapter.get('notes_presse')) if adapter.get('notes_presse') is not None else None
+            notes_spectateur = float(adapter.get('notes_spectateur')) if adapter.get('notes_spectateur') is not None else None
             self.cur.execute('''
                 INSERT INTO films(
                 titre,
@@ -194,14 +198,237 @@ class FilmDatabasePipeline:
                 public,
                 acteurs
                 )
-                VALUES(%s,%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s)''', (item['titre'], item['titre_original'], item['genre'], item['duration'], 
-                                                        item['annee_sortie'], item['annee_production'], item['nationalite'], item['langues'],
-                                                        item['realisateur'], item['description'], item['notes_presse'], item['notes_spectateur'],
-                                                        item['public'], item['acteurs'])
+                VALUES(%s,%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s)''', (
+                    adapter.get('titre'),
+                    adapter.get('titre_original'),
+                    adapter.get('genre'),
+                    adapter.get('duration'),
+                    adapter.get('annee_sortie'),
+                    adapter.get('annee_production'),
+                    adapter.get('nationalite'),
+                    adapter.get('langues'),
+                    adapter.get('realisateur'),
+                    adapter.get('description'),
+                    notes_presse,
+                    notes_spectateur,
+                    adapter.get('public'),
+                    adapter.get('acteurs')
                 )
+            )
             self.connection.commit()
             return item
         pass
+    
+    def close_spider(self, spider):
+        self.cur.close()
+        self.connection.close()
+        
+        
+class SeriescraperPipeline:
+    def process_item(self, item, spider):
+        parsingAdapter = ItemAdapter(item)
+        serieItem = SeriescraperItem()
+        serieAdapter = ItemAdapter(serieItem)
+        
+        serieItem = self.clean_titre(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_body_info(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_body_direction(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_body_nationalite(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_body_titre_original(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_ratings(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_description(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_saison_episode(serieItem, parsingAdapter, serieAdapter)
+        serieItem = self.clean_status(serieItem, parsingAdapter, serieAdapter)
+        
+        return serieItem
+    
+    def clean_titre(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        titre = parsingAdapter.get('titre')
+        serieAdapter['titre'] = titre
+        
+        return serieItem
+    
+    def clean_body_info(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        lst = parsingAdapter.get('body_info')
+        lst = self.clean_list(lst)
+        count_pipe = lst.count('|')
+        match count_pipe:
+            case 1:
+                serieAdapter['periode'] = lst[0]
+                serieAdapter['duree_moyenne'] = 'N/A'
+                serieAdapter['genre'] = lst[2:]
+            case 2:
+                serieAdapter['periode'] = lst[0]
+                serieAdapter['duree_moyenne'] = lst[2]
+                serieAdapter['genre'] = lst[4:]
+        
+        return serieItem
+    
+    def clean_body_direction(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        lst = parsingAdapter.get('body_direction')
+        if lst:
+            lst = self.clean_list(lst)
+            serieAdapter['createur'] = lst[1:]
+        else:
+            serieAdapter['createur'] = []
+        
+        return serieItem
+    
+    def clean_body_nationalite(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        lst = parsingAdapter.get('body_nationality')
+        if lst:
+            lst = self.clean_list(lst)
+            if 'En relation avec' in lst:
+                relation_index = lst.index('En relation avec')
+                serieAdapter['nationalite'] = lst[1:relation_index]
+            else:
+                serieAdapter['nationalite'] = lst[1:]
+        else:
+            serieAdapter['nationalite'] = []
+        
+        return serieItem
+    
+    def clean_body_titre_original(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        lst = parsingAdapter.get('body_titre_original')
+        if lst:
+            lst = self.clean_list(lst)
+            serieAdapter['titre_original'] = lst[1]
+        else:
+            serieAdapter['titre_original'] = serieAdapter.get('titre')
+        
+        return serieItem
+    
+    def clean_ratings(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        ratings = parsingAdapter.get('ratings')
+        if len(ratings) == 2:
+            serieAdapter['notes_presse'] = ratings[0].replace(',', '.')
+            serieAdapter['notes_spectateur'] = ratings[1].replace(',', '.')
+        elif len(ratings) == 1:
+            serieAdapter['notes_presse'] = None
+            serieAdapter['notes_spectateur'] = ratings[0].replace(',', '.')
+        else:
+            serieAdapter['notes_presse'] = None
+            serieAdapter['notes_spectateur'] = None
+            
+        return serieItem
+    
+    def clean_description(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        description = parsingAdapter.get('description')
+        
+        if description:
+            serieAdapter['description'] = description[0]
+        else:
+            serieAdapter['description'] = []    
+            
+        return serieItem
+    
+    def clean_saison_episode(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        lst = parsingAdapter.get('saison_episode')
+        match len(lst):
+            case 1:
+                serieAdapter['saisons'] = lst[0].split(' ')[0]
+            case 2:
+                serieAdapter['saisons'] = lst[0].split(' ')[0]
+                serieAdapter['episodes'] = lst[1].split(' ')[0]
+            case 3:
+                serieAdapter['saisons'] = lst[0].split(' ')[0]
+                serieAdapter['episodes'] = lst[1].split(' ')[0]
+                serieAdapter['prix'] = lst[2].split(' ')[0]
+                
+        
+        return serieItem
+    
+    def clean_status(self,serieItem: SeriescraperItem, parsingAdapter: ItemAdapter, serieAdapter: ItemAdapter):
+        status = parsingAdapter.get('status')
+        
+        serieAdapter['status'] = status
+        
+        return serieItem
+    
+    def clean_list(self, lst: list) -> list:
+        
+        def filter_list(string: str) -> bool:
+            if string == '' or (len(string) == 1 and string != '|'):
+                return False
+            return True
+        
+        lst = list(element.replace('\n', '') for element in lst)
+        lst = list(filter(filter_list, lst))
+        return lst
+    
+    
+class SerieDatabasePipeline:
+    def open_spider(self, spider):
+        hostname = 'localhost'
+        username = 'postgres'
+        password = ''
+        database = "postgres"
+        
+        self.connection = psycopg2.connect(host=hostname, user=username, password=password, dbname=database)
+        
+        self.cur = self.connection.cursor()
+        self.cur.execute("DROP TABLE series")
+        self.cur.execute('''
+        CREATE TABLE IF NOT EXISTS series(
+            id SERIAL PRIMARY KEY,
+            titre TEXT,
+            titre_original TEXT,
+            createur TEXT[],
+            periode TEXT,
+            duree_moyenne TEXT,
+            nationalite TEXT[],
+            genre TEXT[],
+            notes_presse NUMERIC,
+            notes_spectateur NUMERIC,
+            description TEXT,
+            saisons TEXT,
+            episodes TEXT,
+            prix TEXT,
+            status TEXT
+        )
+        ''')
+        self.connection.commit()
+        
+    def process_item(self, item, spider):
+        adapter = ItemAdapter(item)
+        notes_presse = float(adapter.get('notes_presse')) if adapter.get('notes_presse') is not None else None
+        notes_spectateur = float(adapter.get('notes_spectateur')) if adapter.get('notes_spectateur') is not None else None
+        self.cur.execute('''
+            INSERT INTO series(
+            titre,
+            titre_original,
+            createur,
+            periode,
+            duree_moyenne,
+            nationalite,
+            genre,
+            notes_presse,
+            notes_spectateur,
+            description,
+            saisons,
+            episodes,
+            prix,
+            status
+            )
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s,%s,%s)''', (
+                adapter.get('titre'),
+                adapter.get('titre_original'),
+                adapter.get('createur'),
+                adapter.get('periode'),
+                adapter.get('duree_moyenne'),
+                adapter.get('nationalite'),
+                adapter.get('genre'),
+                notes_presse,
+                notes_spectateur,
+                adapter.get('description'),
+                adapter.get('saisons'),
+                adapter.get('episodes'),
+                adapter.get('prix'),
+                adapter.get('status')
+            )
+        )
+        self.connection.commit()
+        return item
     
     def close_spider(self, spider):
         self.cur.close()
